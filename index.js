@@ -39,13 +39,34 @@ const getRandomUserAgent = () => {
   return { 'sec-ch-ua': selected.ua, 'sec-ch-ua-platform': selected.platform };
 };
 
+async function readConfig() {
+  try {
+    const data = await fs.readFile('config.json', 'utf8');
+    return JSON.parse(data);
+  } catch (error) {
+    logger.error('Error reading config.json: ' + error.message);
+    return {};
+  }
+}
+
+async function readTokens() {
+  try {
+    const data = await fs.readFile('token.txt', 'utf8');
+    return data.split('\n').map(token => token.trim()).filter(token => token.length > 0);
+  } catch (error) {
+    logger.error('Error reading token.txt: ' + error.message);
+    return [];
+  }
+}
+
 class CraftWorldBot {
-  constructor() {
+  constructor(accountIndex) {
     this.baseURL = 'https://preview.craft-world.gg/api/1/user-actions/ingest';
     this.authToken = null;
-    this.mineId = '06838603-fec0-7831-8000-01085828af7a';
-    this.factoryId = '0683ea27-51fb-7e76-8000-334a76e821ae';
-    this.areaId = '0683e9f4-3f4f-7df3-8000-490a6d41be7e';
+    this.mineId = null;
+    this.factoryId = null;
+    this.areaId = null;
+    this.accountIndex = accountIndex; 
     this.isRunning = false;
     this.previousResources = {};
 
@@ -69,20 +90,25 @@ class CraftWorldBot {
     };
   }
 
+  async setIdsFromConfig(config) {
+    const index = this.accountIndex + 1; 
+    this.mineId = config[`mineId_${index}`];
+    this.factoryId = config[`factoryId_${index}`];
+    this.areaId = config[`areaId_${index}`];
+
+    if (!this.mineId || !this.factoryId || !this.areaId) {
+      logger.error(`Missing IDs for account ${index} in config.json`);
+      return false;
+    }
+
+    logger.info(`IDs set for account ${index}: mineId=${this.mineId}, factoryId=${this.factoryId}, areaId=${this.areaId}`);
+    return true;
+  }
+
   setAuthToken(token) {
-    this.authToken = `Bearer jwt_${token}`;
+    this.authToken = token.startsWith('Bearer jwt_') ? token : `Bearer jwt_${token}`;
     this.headers.authorization = this.authToken;
-    logger.success('Auth token set successfully');
-  }
-
-  setFactoryId(factoryId) {
-    this.factoryId = factoryId;
-    logger.info(`Factory ID set: ${factoryId}`);
-  }
-
-  setAreaId(areaId) {
-    this.areaId = areaId;
-    logger.info(`Area ID set: ${areaId}`);
+    logger.success(`Auth token set successfully for account ${this.accountIndex + 1}`);
   }
 
   generateActionId() {
@@ -108,7 +134,7 @@ class CraftWorldBot {
   }
 
   displayResourceInfo(account) {
-    logger.step('=== RESOURCE INFORMATION ===');
+    logger.step(`=== RESOURCE INFORMATION (Account ${this.accountIndex + 1}) ===`);
     logger.info(`Power: ${this.formatNumber(account.power || 0)}`);
     logger.info(`Experience Points: ${this.formatNumber(account.experiencePoints || 0)}`);
     logger.info(`Wallet: ${account.walletAddress || 'N/A'}`);
@@ -159,99 +185,179 @@ class CraftWorldBot {
   }
 
   async startFactory() {
-    try {
-      const actionId = this.generateActionId();
-      const payload = {
-        data: [{
-          id: actionId,
-          actionType: "START_FACTORY",
-          payload: { factoryId: this.factoryId },
-          time: Date.now()
-        }]
-      };
+    let retries = 3;
+    while (retries > 0) {
+      try {
+        const actionId = this.generateActionId();
+        const payload = {
+          data: [{
+            id: actionId,
+            actionType: "START_FACTORY",
+            payload: { factoryId: this.factoryId },
+            time: Date.now()
+          }]
+        };
 
-      const response = await axios.post(this.baseURL, payload, { headers: this.headers });
-      if (response.data.data.processed.includes(actionId)) {
-        return true;
+        const response = await axios.post(this.baseURL, payload, { headers: this.headers });
+        if (response.data.data.processed.includes(actionId)) {
+          logger.success(`Factory started successfully for account ${this.accountIndex + 1}`);
+          return true;
+        }
+        logger.error(`Failed to start factory for account ${this.accountIndex + 1}: Action ID not processed`);
+        return false;
+      } catch (error) {
+        retries--;
+        const errorMessage = error.response
+          ? `Status: ${error.response.status}, Data: ${JSON.stringify(error.response.data)}`
+          : error.message;
+        logger.error(`Error starting factory for account ${this.accountIndex + 1} (retries left: ${retries}): ${errorMessage}`);
+        if (retries === 0) return false;
+        await this.sleep(2000 * (4 - retries));
       }
-      logger.error('Failed to start factory');
-      return false;
-    } catch (error) {
-      logger.error('Error starting factory: ' + (error.response?.data || error.message));
-      return false;
     }
+    return false;
   }
 
   async claimArea(amountToClaim = 1) {
-    try {
-      const actionId = this.generateActionId();
-      const payload = {
-        data: [{
-          id: actionId,
-          actionType: "CLAIM_AREA",
-          payload: { areaId: this.areaId, amountToClaim },
-          time: Date.now()
-        }]
-      };
+    let retries = 3;
+    while (retries > 0) {
+      try {
+        const actionId = this.generateActionId();
+        const payload = {
+          data: [{
+            id: actionId,
+            actionType: "CLAIM_AREA",
+            payload: { areaId: this.areaId, amountToClaim },
+            time: Date.now()
+          }]
+        };
 
-      const response = await axios.post(this.baseURL, payload, { headers: this.headers });
-      if (response.data.data.processed.includes(actionId)) {
-        return true;
+        const response = await axios.post(this.baseURL, payload, { headers: this.headers });
+        if (response.data.data.processed.includes(actionId)) {
+          logger.success(`Area claimed successfully for account ${this.accountIndex + 1}`);
+          return true;
+        }
+        logger.error(`Failed to claim area for account ${this.accountIndex + 1}: Action ID not processed`);
+        return false;
+      } catch (error) {
+        retries--;
+        const errorMessage = error.response
+          ? `Status: ${error.response.status}, Data: ${JSON.stringify(error.response.data)}`
+          : error.message;
+        logger.error(`Error claiming area for account ${this.accountIndex + 1} (retries left: ${retries}): ${errorMessage}`);
+        if (retries === 0) return false;
+        await this.sleep(2000 * (4 - retries));
       }
-      logger.error('Failed to claim area');
-      return false;
-    } catch (error) {
-      logger.error('Error claiming area: ' + (error.response?.data || error.message));
-      return false;
     }
+    return false;
   }
 
   async startMine() {
-    try {
-      const actionId = this.generateActionId();
-      const payload = {
-        data: [{
-          id: actionId,
-          actionType: "START_MINE",
-          payload: { mineId: this.mineId },
-          time: Date.now()
-        }]
-      };
+    let retries = 3;
+    while (retries > 0) {
+      try {
+        const actionId = this.generateActionId();
+        const payload = {
+          data: [{
+            id: actionId,
+            actionType: "START_MINE",
+            payload: { mineId: this.mineId },
+            time: Date.now()
+          }]
+        };
 
-      const response = await axios.post(this.baseURL, payload, { headers: this.headers });
-      if (response.data.data.processed.includes(actionId)) {
-        this.storeCurrentResources(response.data.data.account);
-        return response.data.data.account;
+        const response = await axios.post(this.baseURL, payload, { headers: this.headers });
+        if (response.data.data.processed.includes(actionId)) {
+          this.storeCurrentResources(response.data.data.account);
+          logger.success(`Mine started successfully for account ${this.accountIndex + 1}`);
+          return response.data.data.account;
+        }
+        logger.error(`Failed to start mine for account ${this.accountIndex + 1}: Action ID not processed`);
+        return null;
+      } catch (error) {
+        retries--;
+        const errorMessage = error.response
+          ? `Status: ${error.response.status}, Data: ${JSON.stringify(error.response.data)}`
+          : error.message;
+        logger.error(`Error starting mine for account ${this.accountIndex + 1} (retries left: ${retries}): ${errorMessage}`);
+        if (retries === 0) return null;
+        await this.sleep(2000 * (4 - retries));
       }
-      logger.error('Failed to start mine');
-      return null;
-    } catch (error) {
-      logger.error('Error starting mine: ' + (error.response?.data || error.message));
-      return null;
     }
+    return null;
   }
 
   async claimMine() {
-    try {
-      const actionId = this.generateActionId();
-      const payload = {
-        data: [{
-          id: actionId,
-          actionType: "CLAIM_MINE",
-          payload: { mineId: this.mineId },
-          time: Date.now()
-        }]
-      };
+    let retries = 3;
+    while (retries > 0) {
+      try {
+        const actionId = this.generateActionId();
+        const payload = {
+          data: [{
+            id: actionId,
+            actionType: "CLAIM_MINE",
+            payload: { mineId: this.mineId },
+            time: Date.now()
+          }]
+        };
 
-      const response = await axios.post(this.baseURL, payload, { headers: this.headers });
-      if (response.data.data.processed.includes(actionId)) {
-        return response.data.data.account;
+        const response = await axios.post(this.baseURL, payload, { headers: this.headers });
+        if (response.data.data.processed.includes(actionId)) {
+          logger.success(`Mine claimed successfully for account ${this.accountIndex + 1} - ${this.displayClaimSummary(response.data.data.account)}`);
+          return response.data.data.account;
+        }
+        logger.error(`Failed to claim mine for account ${this.accountIndex + 1}: Action ID not processed`);
+        return null;
+      } catch (error) {
+        retries--;
+        const errorMessage = error.response
+          ? `Status: ${error.response.status}, Data: ${JSON.stringify(error.response.data)}`
+          : error.message;
+        logger.error(`Error claiming mine for account ${this.accountIndex + 1} (retries left: ${retries}): ${errorMessage}`);
+        if (retries === 0) return null;
+        await this.sleep(2000 * (4 - retries));
       }
-      logger.error('Failed to claim mine');
-      return null;
-    } catch (error) {
-      logger.error('Error claiming mine: ' + (error.response?.data || error.message));
-      return null;
+    }
+    return null;
+  }
+
+  async getAccountInfo() {
+    let retries = 3;
+    while (retries > 0) {
+      try {
+        const actionId = this.generateActionId();
+        const payload = {
+          data: [{
+            id: actionId,
+            actionType: "START_MINE",
+            payload: { mineId: this.mineId },
+            time: Date.now()
+          }]
+        };
+
+        const response = await axios.post(this.baseURL, payload, { headers: this.headers });
+        logger.success(`Account info fetched successfully for account ${this.accountIndex + 1}`);
+        return response.data.data.account;
+      } catch (error) {
+        retries--;
+        const errorMessage = error.response
+          ? `Status: ${error.response.status}, Data: ${JSON.stringify(error.response.data)}`
+          : error.message;
+        logger.error(`Error getting account info for account ${this.accountIndex + 1} (retries left: ${retries}): ${errorMessage}`);
+        if (retries === 0) return null;
+        await this.sleep(2000 * (4 - retries));
+      }
+    }
+    return null;
+  }
+
+  async displayAccountStatus() {
+    logger.loading(`Fetching current account status for account ${this.accountIndex + 1}...`);
+    const account = await this.getAccountInfo();
+    if (account) {
+      this.displayResourceInfo(account);
+    } else {
+      logger.error(`Failed to fetch account status for account ${this.accountIndex + 1}`);
     }
   }
 
@@ -259,14 +365,19 @@ class CraftWorldBot {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  async startCombinedLoop(mineInterval = 30000, claimInterval = 60000, enableFactory = false, enableArea = false) {
+  async startCombinedLoop(mineInterval = 60000, claimInterval = 60000, enableFactory = true, enableArea = true) {
     if (this.isRunning) {
-      logger.warn('Bot is already running!');
+      logger.warn(`Bot is already running for account ${this.accountIndex + 1}!`);
       return;
     }
 
     if (!this.authToken) {
-      logger.error('Please set auth token first using setAuthToken()');
+      logger.error(`Please set auth token first for account ${this.accountIndex + 1} using setAuthToken()`);
+      return;
+    }
+
+    if (!this.mineId || !this.factoryId || !this.areaId) {
+      logger.error(`Missing IDs for account ${this.accountIndex + 1}. Please check config.json`);
       return;
     }
 
@@ -275,43 +386,47 @@ class CraftWorldBot {
 
     while (this.isRunning) {
       try {
-        logger.step(`=== CYCLE ${mineCount + 1} ===`);
+        logger.step(`=== CYCLE ${mineCount + 1} (Account ${this.accountIndex + 1}) ===`);
         logger.loading('Starting mine and factory...');
 
         const mineAccount = await this.startMine();
         if (mineAccount) {
-          logger.success('Mine started successfully');
+          logger.success(`Mine started successfully for account ${this.accountIndex + 1}`);
+          this.displayResourceInfo(mineAccount);
         }
 
         if (enableFactory) {
-          await this.sleep(2000);
+          await this.sleep(5000);
           const factorySuccess = await this.startFactory();
           if (factorySuccess) {
-            logger.success('Factory started successfully');
+            logger.success(`Factory started successfully for account ${this.accountIndex + 1}`);
           }
         }
 
-        logger.loading(`Waiting ${mineInterval/1000}s before claiming...`);
+        logger.loading(`Waiting ${mineInterval/1000}s before claiming for account ${this.accountIndex + 1}...`);
         await this.sleep(mineInterval);
 
         const claimAccount = await this.claimMine();
         if (claimAccount) {
-          logger.success(`Mine claimed successfully - ${this.displayClaimSummary(claimAccount)}`);
+          logger.success(`Mine claimed successfully for account ${this.accountIndex + 1} - ${this.displayClaimSummary(claimAccount)}`);
         }
 
         if (enableArea) {
-          await this.sleep(2000);
+          await this.sleep(5000);
           const areaSuccess = await this.claimArea(1);
           if (areaSuccess) {
-            logger.success('Area claimed successfully');
+            logger.success(`Area claimed successfully for account ${this.accountIndex + 1}`);
           }
         }
 
         mineCount++;
-        logger.loading(`Waiting ${claimInterval/1000}s before next cycle...`);
+        logger.loading(`Waiting ${claimInterval/1000}s before next cycle for account ${this.accountIndex + 1}...`);
         await this.sleep(claimInterval);
       } catch (error) {
-        logger.error('Error in combined loop: ' + error.message);
+        const errorMessage = error.response
+          ? `Status: ${error.response.status}, Data: ${JSON.stringify(error.response.data)}`
+          : error.message;
+        logger.error(`Error in combined loop for account ${this.accountIndex + 1}: ${errorMessage}`);
         await this.sleep(5000);
       }
     }
@@ -319,12 +434,17 @@ class CraftWorldBot {
 
   async startFactoryLoop(interval = 60000) {
     if (this.isRunning) {
-      logger.warn('Bot is already running!');
+      logger.warn(`Bot is already running for account ${this.accountIndex + 1}!`);
       return;
     }
 
     if (!this.authToken) {
-      logger.error('Please set auth token first using setAuthToken()');
+      logger.error(`Please set auth token first for account ${this.accountIndex + 1} using setAuthToken()`);
+      return;
+    }
+
+    if (!this.factoryId) {
+      logger.error(`Missing factoryId for account ${this.accountIndex + 1}. Please check config.json`);
       return;
     }
 
@@ -333,30 +453,38 @@ class CraftWorldBot {
 
     while (this.isRunning) {
       try {
-        logger.step(`=== FACTORY CYCLE ${factoryCount + 1} ===`);
+        logger.step(`=== FACTORY CYCLE ${factoryCount + 1} (Account ${this.accountIndex + 1}) ===`);
         const factorySuccess = await this.startFactory();
         if (factorySuccess) {
-          logger.success('Factory started successfully');
+          logger.success(`Factory started successfully for account ${this.accountIndex + 1}`);
         }
 
-        logger.loading(`Waiting ${interval/1000}s before next factory start...`);
+        logger.loading(`Waiting ${interval/1000}s before next factory start for account ${this.accountIndex + 1}...`);
         await this.sleep(interval);
         factoryCount++;
       } catch (error) {
-        logger.error('Error in factory loop: ' + error.message);
+        const errorMessage = error.response
+          ? `Status: ${error.response.status}, Data: ${JSON.stringify(error.response.data)}`
+          : error.message;
+        logger.error(`Error in factory loop for account ${this.accountIndex + 1}: ${errorMessage}`);
         await this.sleep(5000);
       }
     }
   }
 
-  async startAreaLoop(interval = 30000, amountToClaim = 1) {
+  async startAreaLoop(interval = 60000, amountToClaim = 1) {
     if (this.isRunning) {
-      logger.warn('Bot is already running!');
+      logger.warn(`Bot is already running for account ${this.accountIndex + 1}!`);
       return;
     }
 
     if (!this.authToken) {
-      logger.error('Please set auth token first using setAuthToken()');
+      logger.error(`Please set auth token first for account ${this.accountIndex + 1} using setAuthToken()`);
+      return;
+    }
+
+    if (!this.areaId) {
+      logger.error(`Missing areaId for account ${this.accountIndex + 1}. Please check config.json`);
       return;
     }
 
@@ -365,30 +493,38 @@ class CraftWorldBot {
 
     while (this.isRunning) {
       try {
-        logger.step(`=== AREA CYCLE ${areaCount + 1} ===`);
+        logger.step(`=== AREA CYCLE ${areaCount + 1} (Account ${this.accountIndex + 1}) ===`);
         const areaSuccess = await this.claimArea(amountToClaim);
         if (areaSuccess) {
-          logger.success('Area claimed successfully');
+          logger.success(`Area claimed successfully for account ${this.accountIndex + 1}`);
         }
 
-        logger.loading(`Waiting ${interval/1000}s before next area claim...`);
+        logger.loading(`Waiting ${interval/1000}s before next area claim for account ${this.accountIndex + 1}...`);
         await this.sleep(interval);
         areaCount++;
       } catch (error) {
-        logger.error('Error in area loop: ' + error.message);
+        const errorMessage = error.response
+          ? `Status: ${error.response.status}, Data: ${JSON.stringify(error.response.data)}`
+          : error.message;
+        logger.error(`Error in area loop for account ${this.accountIndex + 1}: ${errorMessage}`);
         await this.sleep(5000);
       }
     }
   }
 
-  async startMiningLoop(mineInterval = 30000, claimInterval = 60000) {
+  async startMiningLoop(mineInterval = 60000, claimInterval = 60000) {
     if (this.isRunning) {
-      logger.warn('Bot is already running!');
+      logger.warn(`Bot is already running for account ${this.accountIndex + 1}!`);
       return;
     }
 
     if (!this.authToken) {
-      logger.error('Please set auth token first using setAuthToken()');
+      logger.error(`Please set auth token first for account ${this.accountIndex + 1} using setAuthToken()`);
+      return;
+    }
+
+    if (!this.mineId) {
+      logger.error(`Missing mineId for account ${this.accountIndex + 1}. Please check config.json`);
       return;
     }
 
@@ -397,27 +533,31 @@ class CraftWorldBot {
 
     while (this.isRunning) {
       try {
-        logger.step(`=== CYCLE ${mineCount + 1} ===`);
-        logger.loading('Starting mine...');
+        logger.step(`=== CYCLE ${mineCount + 1} (Account ${this.accountIndex + 1}) ===`);
+        logger.loading(`Starting mine for account ${this.accountIndex + 1}...`);
 
         const mineAccount = await this.startMine();
         if (mineAccount) {
-          logger.success('Mine started successfully');
+          logger.success(`Mine started successfully for account ${this.accountIndex + 1}`);
+          this.displayResourceInfo(mineAccount);
         }
 
-        logger.loading(`Waiting ${mineInterval/1000}s before claiming...`);
+        logger.loading(`Waiting ${mineInterval/1000}s before claiming for account ${this.accountIndex + 1}...`);
         await this.sleep(mineInterval);
 
         const claimAccount = await this.claimMine();
         if (claimAccount) {
-          logger.success(`Mine claimed successfully - ${this.displayClaimSummary(claimAccount)}`);
+          logger.success(`Mine claimed successfully for account ${this.accountIndex + 1} - ${this.displayClaimSummary(claimAccount)}`);
         }
 
         mineCount++;
-        logger.loading(`Waiting ${claimInterval/1000}s before next cycle...`);
+        logger.loading(`Waiting ${claimInterval/1000}s before next cycle for account ${this.accountIndex + 1}...`);
         await this.sleep(claimInterval);
       } catch (error) {
-        logger.error('Error in mining loop: ' + error.message);
+        const errorMessage = error.response
+          ? `Status: ${error.response.status}, Data: ${JSON.stringify(error.response.data)}`
+          : error.message;
+        logger.error(`Error in mining loop for account ${this.accountIndex + 1}: ${errorMessage}`);
         await this.sleep(5000);
       }
     }
@@ -425,53 +565,14 @@ class CraftWorldBot {
 
   stopBot() {
     this.isRunning = false;
-    logger.warn('Bot stopped');
-  }
-
-  async getAccountInfo() {
-    try {
-      const actionId = this.generateActionId();
-      const payload = {
-        data: [{
-          id: actionId,
-          actionType: "START_MINE",
-          payload: { mineId: this.mineId },
-          time: Date.now()
-        }]
-      };
-
-      const response = await axios.post(this.baseURL, payload, { headers: this.headers });
-      return response.data.data.account;
-    } catch (error) {
-      logger.error('Error getting account info: ' + (error.response?.data || error.message));
-      return null;
-    }
-  }
-
-  async displayAccountStatus() {
-    logger.loading('Fetching current account status...');
-    const account = await this.getAccountInfo();
-    if (account) {
-      this.displayResourceInfo(account);
-    } else {
-      logger.error('Failed to fetch account status');
-    }
-  }
-}
-
-async function readTokens() {
-  try {
-    const data = await fs.readFile('token.txt', 'utf8');
-    return data.split('\n').map(token => token.trim()).filter(token => token.length > 0);
-  } catch (error) {
-    logger.error('Error reading token.txt: ' + error.message);
-    return [];
+    logger.warn(`Bot stopped for account ${this.accountIndex + 1}`);
   }
 }
 
 async function main() {
-  logger.banner(); 
+  logger.banner();
   const tokens = await readTokens();
+  const config = await readConfig();
 
   if (tokens.length === 0) {
     logger.error('No tokens found in token.txt');
@@ -481,12 +582,18 @@ async function main() {
   logger.info(`Found ${tokens.length} tokens in token.txt`);
 
   for (let i = 0; i < tokens.length; i++) {
-    const bot = new CraftWorldBot();
+    const bot = new CraftWorldBot(i); 
     logger.step(`=== Processing Account ${i + 1}/${tokens.length} ===`);
+
+    const idsSet = await bot.setIdsFromConfig(config);
+    if (!idsSet) {
+      logger.error(`Skipping account ${i + 1} due to missing IDs in config.json`);
+      continue;
+    }
 
     bot.setAuthToken(tokens[i]);
     await bot.displayAccountStatus();
-    await bot.startCombinedLoop(30000, 60000, true, true);
+    await bot.startCombinedLoop(60000, 60000, true, true);
 
     if (i < tokens.length - 1) {
       logger.loading(`Waiting 5 seconds before processing next account...`);
@@ -507,5 +614,10 @@ process.on('SIGINT', () => {
 module.exports = CraftWorldBot;
 
 if (require.main === module) {
-  main().catch(error => logger.error('Main error: ' + error.message));
+  main().catch(error => {
+    const errorMessage = error.response
+      ? `Status: ${error.response.status}, Data: ${JSON.stringify(error.response.data)}`
+      : error.message;
+    logger.error(`Main error: ${errorMessage}`);
+  });
 }
