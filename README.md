@@ -23,9 +23,9 @@ An automated bot for Craft World game that handles mining, factory operations, a
    npm install
    ```
 
-3. **Create token file**
+3. **Edit token file**
    ```bash
-   touch token.txt
+   nano token.txt
    ```
 
 4. **Add your tokens**
